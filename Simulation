@@ -2,71 +2,203 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 
-st.title("Lithography Simulation")
+st.title("Advanced Lithography Simulation")
 
 # Sidebar inputs for simulation parameters
 st.sidebar.header("Simulation Parameters")
 
 # Mask pattern selection
-mask_type = st.sidebar.selectbox("Mask Type", options=["Line-Space Grating", "Contact Hole Array"])
+mask_type = st.sidebar.selectbox(
+    "Mask Type",
+    options=["Line-Space Grating", "Contact Hole Array", "Custom Pattern"],
+)
 
-wavelength = st.sidebar.number_input("Wavelength (nm)", min_value=10.0, value=193.0, step=1.0)
-na = st.sidebar.slider("Numerical Aperture (NA)", min_value=0.1, max_value=1.4, value=0.85, step=0.01)
-sigma = st.sidebar.slider("Partial Coherence Factor (σ)", min_value=0.0, max_value=1.0, value=0.7, step=0.01)
+wavelength = st.sidebar.number_input(
+    "Wavelength (nm)", min_value=10.0, value=193.0, step=1.0
+)
+na = st.sidebar.slider(
+    "Numerical Aperture (NA)", min_value=0.1, max_value=1.4, value=0.85, step=0.01
+)
+sigma = st.sidebar.slider(
+    "Partial Coherence Factor (σ)", min_value=0.0, max_value=1.0, value=0.7, step=0.01
+)
 pitch = st.sidebar.number_input("Pitch (nm)", min_value=50.0, value=180.0, step=1.0)
-duty_cycle = st.sidebar.slider("Duty Cycle", min_value=0.1, max_value=0.9, value=0.5, step=0.01)
-defocus_nm = st.sidebar.slider("Defocus (nm)", min_value=-500.0, max_value=500.0, value=0.0, step=10.0)
-dose = st.sidebar.slider("Exposure Dose (Relative)", min_value=0.5, max_value=1.5, value=1.0, step=0.01)
-threshold = st.sidebar.slider("Resist Threshold", min_value=0.0, max_value=1.0, value=0.3, step=0.01)
+duty_cycle = st.sidebar.slider(
+    "Duty Cycle", min_value=0.1, max_value=0.9, value=0.5, step=0.01
+)
+defocus_nm = st.sidebar.slider(
+    "Defocus (nm)", min_value=-500.0, max_value=500.0, value=0.0, step=10.0
+)
+dose = st.sidebar.slider(
+    "Exposure Dose (Relative)", min_value=0.5, max_value=1.5, value=1.0, step=0.01
+)
+threshold = st.sidebar.slider(
+    "Resist Threshold", min_value=0.0, max_value=1.0, value=0.3, step=0.01
+)
+
+# Advanced resist parameters
+st.sidebar.header("Advanced Resist Parameters")
+diffusion_length_nm = st.sidebar.number_input(
+    "Diffusion Length (nm)", min_value=0.0, value=10.0, step=1.0
+)
+
+# Custom pattern input
+if mask_type == "Custom Pattern":
+    st.sidebar.header("Custom Pattern Input")
+    custom_pattern = st.sidebar.text_input(
+        "Enter custom pattern function of x and y (in μm), e.g., 'np.sin(2*np.pi*fx*x) * np.sin(2*np.pi*fy*y)'"
+    )
+    fx = st.sidebar.number_input("Spatial Frequency fx (1/μm)", value=1.0)
+    fy = st.sidebar.number_input("Spatial Frequency fy (1/μm)", value=1.0)
 
 # Convert units to micrometers (μm)
 wavelength_um = wavelength / 1000.0
 pitch_um = pitch / 1000.0
 defocus_um = defocus_nm / 1000.0
+diffusion_length_um = diffusion_length_nm / 1000.0
 
-# Spatial positions
-x = np.linspace(-2, 2, 2000) * pitch_um  # Extend over multiple pitches
+# Spatial positions for 2D simulation
+grid_size = 500  # Adjust for resolution
+x = np.linspace(-2 * pitch_um, 2 * pitch_um, grid_size)
+y = np.linspace(-2 * pitch_um, 2 * pitch_um, grid_size)
+X, Y = np.meshgrid(x, y)
 
-# Function to calculate the aerial image
-def aerial_image(x, na, sigma, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_type):
-    # Spatial frequency
+# Function to calculate the aerial image in 2D
+def aerial_image_2d(
+    X,
+    Y,
+    na,
+    sigma,
+    wavelength_um,
+    pitch_um,
+    duty_cycle,
+    defocus_um,
+    mask_type,
+    custom_pattern=None,
+    fx_custom=1.0,
+    fy_custom=1.0,
+):
     k0 = 1 / wavelength_um
-    # Illuminated NA range
     na_inner = na * (1 - sigma)
     na_outer = na * (1 + sigma)
-    # Define spatial frequency range based on mask type
+
+    # Frequency domain
+    fx = np.fft.fftfreq(grid_size, d=(x[1] - x[0]))
+    fy = np.fft.fftfreq(grid_size, d=(y[1] - y[0]))
+    FX, FY = np.meshgrid(fx, fy)
+    F_rho = np.sqrt(FX**2 + FY**2)
+
+    # Define mask transmission function
     if mask_type == "Line-Space Grating":
-        fx = np.linspace(-3 / pitch_um, 3 / pitch_um, 100)
+        mask = np.where(np.mod(X, pitch_um) < duty_cycle * pitch_um, 1, 0)
     elif mask_type == "Contact Hole Array":
-        # For simplicity, treat as a 2D grating with circular symmetry
-        fx = np.linspace(0, 3 / pitch_um, 100)
-    # Calculate the coherent point spread function (PSF)
-    intensity = np.zeros_like(x, dtype=np.float64)
-    for f in fx:
-        # Mask transmission (Fourier coefficients)
-        if mask_type == "Line-Space Grating":
-            coef = duty_cycle * np.sinc(f * pitch_um * duty_cycle)
-        elif mask_type == "Contact Hole Array":
-            # Simplified approximation for contact holes
-            coef = (2 * np.pi * duty_cycle) * np.sinc(f * pitch_um * duty_cycle)
-        # Check if the spatial frequency is within the NA
-        if np.abs(f * wavelength_um) <= na_outer:
-            # Partial coherence weight
-            if sigma == 0:
-                weight = 1.0 if np.abs(f * wavelength_um) <= na else 0.0
-            else:
-                weight = (np.abs(f * wavelength_um) - na_inner) / (na_outer - na_inner)
-                weight = np.clip(weight, 0, 1)
-            # OTF with defocus
-            phase = 2 * np.pi * defocus_um * np.sqrt(k0**2 - f**2)
-            otf = weight * np.exp(-1j * phase)
-            # Accumulate intensity
-            intensity += (coef * otf * np.exp(1j * 2 * np.pi * f * x)).real
+        hole_radius = duty_cycle * pitch_um / 2
+        mask = np.where(
+            np.sqrt((np.mod(X, pitch_um) - pitch_um / 2) ** 2 + (np.mod(Y, pitch_um) - pitch_um / 2) ** 2)
+            < hole_radius,
+            1,
+            0,
+        )
+    elif mask_type == "Custom Pattern" and custom_pattern is not None:
+        # Safely evaluate the custom pattern
+        try:
+            mask = eval(custom_pattern)
+        except Exception as e:
+            st.error(f"Error in custom pattern: {e}")
+            return None
+    else:
+        mask = np.ones_like(X)
+
+    # Fourier Transform of the mask
+    mask_ft = np.fft.fftshift(np.fft.fft2(mask))
+
+    # Create the Optical Transfer Function (OTF)
+    pupil = np.where(F_rho * wavelength_um <= na_outer, 1.0, 0.0)
+    if sigma > 0:
+        pupil *= np.clip((F_rho * wavelength_um - na_inner) / (na_outer - na_inner), 0, 1)
+    otf = pupil * np.exp(
+        -1j * 2 * np.pi * defocus_um * np.sqrt(k0**2 - (F_rho) ** 2 + 0j)
+    )
+
+    # Aerial image calculation
+    image_ft = mask_ft * otf
+    image = np.abs(np.fft.ifft2(np.fft.ifftshift(image_ft))) ** 2
+
     # Normalize intensity
-    intensity -= intensity.min()
-    intensity /= intensity.max()
-    return intensity
+    image -= image.min()
+    image /= image.max()
+
+    return image
 
 # Calculate the aerial image
-intensity = aerial_image(x, na, sigma, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_type)
-# Apply exposure
+intensity = aerial_image_2d(
+    X,
+    Y,
+    na,
+    sigma,
+    wavelength_um,
+    pitch_um,
+    duty_cycle,
+    defocus_um,
+    mask_type,
+    custom_pattern=custom_pattern if mask_type == "Custom Pattern" else None,
+    fx_custom=fx if mask_type == "Custom Pattern" else None,
+    fy_custom=fy if mask_type == "Custom Pattern" else None,
+)
+
+if intensity is not None:
+    # Apply exposure dose
+    exposed_intensity = intensity * dose
+
+    # Advanced resist model: Gaussian diffusion
+    from scipy.ndimage import gaussian_filter
+
+    developed_image = gaussian_filter(
+        exposed_intensity, sigma=diffusion_length_um / (x[1] - x[0])
+    )
+
+    # Apply resist threshold
+    resist_image = developed_image >= threshold
+
+    # Plotting the results
+    fig, ax = plt.subplots(1, 3, figsize=(18, 6))
+
+    # Aerial image intensity plot
+    im0 = ax[0].imshow(
+        intensity,
+        extent=[x[0] * 1000, x[-1] * 1000, y[0] * 1000, y[-1] * 1000],
+        cmap="viridis",
+        origin="lower",
+    )
+    ax[0].set_title("Aerial Image Intensity")
+    ax[0].set_xlabel("X Position (nm)")
+    ax[0].set_ylabel("Y Position (nm)")
+    fig.colorbar(im0, ax=ax[0])
+
+    # Developed image after diffusion
+    im1 = ax[1].imshow(
+        developed_image,
+        extent=[x[0] * 1000, x[-1] * 1000, y[0] * 1000, y[-1] * 1000],
+        cmap="viridis",
+        origin="lower",
+    )
+    ax[1].set_title("Developed Image after Diffusion")
+    ax[1].set_xlabel("X Position (nm)")
+    ax[1].set_ylabel("Y Position (nm)")
+    fig.colorbar(im1, ax=ax[1])
+
+    # Resist profile after development
+    im2 = ax[2].imshow(
+        resist_image,
+        extent=[x[0] * 1000, x[-1] * 1000, y[0] * 1000, y[-1] * 1000],
+        cmap="gray",
+        origin="lower",
+    )
+    ax[2].set_title("Resist Profile after Development")
+    ax[2].set_xlabel("X Position (nm)")
+    ax[2].set_ylabel("Y Position (nm)")
+    fig.colorbar(im2, ax=ax[2])
+
+    plt.tight_layout()
+
+    st.pyplot(fig)
