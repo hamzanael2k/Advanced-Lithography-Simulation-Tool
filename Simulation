@@ -1,0 +1,72 @@
+import streamlit as st
+import numpy as np
+import matplotlib.pyplot as plt
+
+st.title("Lithography Simulation")
+
+# Sidebar inputs for simulation parameters
+st.sidebar.header("Simulation Parameters")
+
+# Mask pattern selection
+mask_type = st.sidebar.selectbox("Mask Type", options=["Line-Space Grating", "Contact Hole Array"])
+
+wavelength = st.sidebar.number_input("Wavelength (nm)", min_value=10.0, value=193.0, step=1.0)
+na = st.sidebar.slider("Numerical Aperture (NA)", min_value=0.1, max_value=1.4, value=0.85, step=0.01)
+sigma = st.sidebar.slider("Partial Coherence Factor (σ)", min_value=0.0, max_value=1.0, value=0.7, step=0.01)
+pitch = st.sidebar.number_input("Pitch (nm)", min_value=50.0, value=180.0, step=1.0)
+duty_cycle = st.sidebar.slider("Duty Cycle", min_value=0.1, max_value=0.9, value=0.5, step=0.01)
+defocus_nm = st.sidebar.slider("Defocus (nm)", min_value=-500.0, max_value=500.0, value=0.0, step=10.0)
+dose = st.sidebar.slider("Exposure Dose (Relative)", min_value=0.5, max_value=1.5, value=1.0, step=0.01)
+threshold = st.sidebar.slider("Resist Threshold", min_value=0.0, max_value=1.0, value=0.3, step=0.01)
+
+# Convert units to micrometers (μm)
+wavelength_um = wavelength / 1000.0
+pitch_um = pitch / 1000.0
+defocus_um = defocus_nm / 1000.0
+
+# Spatial positions
+x = np.linspace(-2, 2, 2000) * pitch_um  # Extend over multiple pitches
+
+# Function to calculate the aerial image
+def aerial_image(x, na, sigma, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_type):
+    # Spatial frequency
+    k0 = 1 / wavelength_um
+    # Illuminated NA range
+    na_inner = na * (1 - sigma)
+    na_outer = na * (1 + sigma)
+    # Define spatial frequency range based on mask type
+    if mask_type == "Line-Space Grating":
+        fx = np.linspace(-3 / pitch_um, 3 / pitch_um, 100)
+    elif mask_type == "Contact Hole Array":
+        # For simplicity, treat as a 2D grating with circular symmetry
+        fx = np.linspace(0, 3 / pitch_um, 100)
+    # Calculate the coherent point spread function (PSF)
+    intensity = np.zeros_like(x, dtype=np.float64)
+    for f in fx:
+        # Mask transmission (Fourier coefficients)
+        if mask_type == "Line-Space Grating":
+            coef = duty_cycle * np.sinc(f * pitch_um * duty_cycle)
+        elif mask_type == "Contact Hole Array":
+            # Simplified approximation for contact holes
+            coef = (2 * np.pi * duty_cycle) * np.sinc(f * pitch_um * duty_cycle)
+        # Check if the spatial frequency is within the NA
+        if np.abs(f * wavelength_um) <= na_outer:
+            # Partial coherence weight
+            if sigma == 0:
+                weight = 1.0 if np.abs(f * wavelength_um) <= na else 0.0
+            else:
+                weight = (np.abs(f * wavelength_um) - na_inner) / (na_outer - na_inner)
+                weight = np.clip(weight, 0, 1)
+            # OTF with defocus
+            phase = 2 * np.pi * defocus_um * np.sqrt(k0**2 - f**2)
+            otf = weight * np.exp(-1j * phase)
+            # Accumulate intensity
+            intensity += (coef * otf * np.exp(1j * 2 * np.pi * f * x)).real
+    # Normalize intensity
+    intensity -= intensity.min()
+    intensity /= intensity.max()
+    return intensity
+
+# Calculate the aerial image
+intensity = aerial_image(x, na, sigma, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_type)
+# Apply exposure
