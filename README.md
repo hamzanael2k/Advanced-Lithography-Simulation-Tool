@@ -63,6 +63,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - This tool was inspired by the need for accessible lithography simulation in semiconductor education and research.
 - Special thanks to the Streamlit team for providing an excellent framework for building interactive data applications.
 
-## Contact
 
-For questions or feedback, please open an issue in this repository or contact [your-email@example.com].
