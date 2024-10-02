@@ -56,7 +56,7 @@ Contributions to improve the simulation tool are welcome! Please feel free to su
 
 ## License
 
-This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
