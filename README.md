@@ -2,26 +2,29 @@
 
 ## Overview
 
-This Advanced Lithography Simulation Tool is a Streamlit-based application that provides a comprehensive platform for simulating and analyzing various aspects of the lithography process used in semiconductor manufacturing. It offers a user-friendly interface for exploring the effects of different lithography parameters on the final resist pattern.
+This repository contains a comprehensive lithography simulation tool implemented in Python using Streamlit. The tool provides an interactive interface for simulating various aspects of the lithography process, including aerial image formation, resist processes, and 3D resist profile visualization. It's designed for process engineers, researchers, and students working in semiconductor manufacturing and photolithography.
 
 ## Features
 
-- **Interactive Parameter Adjustment**: Easily modify key lithography parameters such as wavelength, numerical aperture, partial coherence factor, and more.
-- **Multiple Mask Types**: Support for line-space gratings, contact hole arrays, and custom patterns.
-- **Advanced Resist Modeling**: Incorporates chemical amplification effects and acid diffusion simulation.
-- **Shot Noise Simulation**: Models photon shot noise to simulate line-edge roughness (LER) and critical dimension variations.
-- **Automatic Parameter Optimization**: Utilizes scipy.optimize to find optimal lithography parameters for desired critical dimensions.
-- **Preset Configurations**: Includes preset parameter sets for common lithography processes (e.g., DUV, EUV).
-- **Performance Optimization**: Leverages Numba for just-in-time compilation to enhance computational speed.
-- **Downloadable Results**: Allows users to save and download simulation results for further analysis.
-- **Critical Dimension Measurement**: Provides automated measurement of the simulated critical dimension.
+- Aerial image calculation with customizable parameters (wavelength, NA, sigma, etc.)
+- Resist process simulation including:
+  - Chemical amplification
+  - Acid diffusion
+  - Dill's model for resist bleaching
+  - Standing wave effects
+- 3D resist profile visualization
+- Process window analysis
+- Parameter optimization
+- Sensitivity analysis
+- Support for various mask types (Line-Space Grating, Contact Hole Array, Custom Patterns)
+- File import capabilities (GDSII, SVG, NumPy arrays)
 
 ## Installation
 
 1. Clone this repository:
    ```
-   git clone https://github.com/your-username/advanced-lithography-simulation.git
-   cd advanced-lithography-simulation
+   git clone https://github.com/yourusername/lithography-simulation.git
+   cd lithography-simulation
    ```
 
 2. Create a virtual environment (optional but recommended):
@@ -37,22 +40,36 @@ This Advanced Lithography Simulation Tool is a Streamlit-based application that 
 
 ## Usage
 
-1. Run the Streamlit app:
-   ```
-   streamlit run lithography_simulation.py
-   ```
+To run the simulation tool:
 
-2. Open your web browser and navigate to the URL displayed in the terminal (usually `http://localhost:8501`).
+```
+streamlit run lithography_simulation.py
+```
 
-3. Use the sidebar to adjust simulation parameters and explore different lithography conditions.
+This will start a local Streamlit server and open the application in your default web browser.
 
-4. Click the "Optimize Parameters" button to find optimal settings for a target critical dimension.
+## Dependencies
 
-5. Download the simulation results using the "Download Results" button for further analysis or reporting.
+- streamlit
+- numpy
+- scipy
+- matplotlib
+- plotly
+- numba
+- gdsii (for GDSII file handling)
+- svgwrite (for SVG file handling)
+
+For a complete list of dependencies with version numbers, see `requirements.txt`.
 
 ## Contributing
 
-Contributions to improve the simulation tool are welcome! Please feel free to submit pull requests or open issues to discuss potential enhancements.
+Contributions to this project are welcome! Please follow these steps:
+
+1. Fork the repository
+2. Create a new branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
 ## License
 
@@ -60,7 +77,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- This tool was inspired by the need for accessible lithography simulation in semiconductor education and research.
-- Special thanks to the Streamlit team for providing an excellent framework for building interactive data applications.
+- This tool was inspired by the need for accessible and comprehensive lithography simulation in semiconductor manufacturing.
+- Special thanks to the open-source community for providing the libraries and tools that made this project possible.
 
 
+## Disclaimer
+
+This simulation tool is provided for educational and research purposes only. While efforts have been made to ensure accuracy, the results should not be used as the sole basis for real-world manufacturing decisions without proper validation.
