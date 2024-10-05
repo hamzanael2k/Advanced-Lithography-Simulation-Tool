@@ -1,3 +1,7 @@
+!pip install streamlit
+!pip install svgwrite
+!pip install gdspy
+
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
@@ -8,27 +12,41 @@ from io import BytesIO
 import plotly.express as px
 import plotly.graph_objects as go
 import numba
-import gdsii  # Mock-up for GDSII handling (requires actual GDSII library)
+import gdspy  # Mock-up for GDSII handling (using gdspy library)
 import svgwrite
 
+# Placeholder functions for GDSII and SVG handling
+def gdspy_to_array(gds_lib, grid_size):
+    # Placeholder function to convert GDSII data to a numpy array mask pattern
+    st.error("GDSII file handling is not implemented.")
+    st.stop()
+
+def svg_to_array(svg_file, grid_size):
+    # Placeholder function to convert SVG data to a numpy array mask pattern
+    st.error("SVG file handling is not implemented.")
+    st.stop()
+
 # Implement actual Zernike polynomials
-@numba.jit(nopython=True)
 def zernike(n, m, rho, phi):
-    if (n - m) % 2:
-        return 0.0
-    radial = 0.0
-    for k in range((n - m) // 2 + 1):
-        radial += (-1)**k * np.math.factorial(n - k) / (np.math.factorial(k) * np.math.factorial((n + m) // 2 - k) * np.math.factorial((n - m) // 2 - k)) * rho**(n - 2*k)
+    if (n - abs(m)) % 2 != 0:
+        return np.zeros_like(rho)
+    radial = np.zeros_like(rho)
+    for k in range((n - abs(m)) // 2 + 1):
+        num = (-1)**k * np.math.factorial(n - k)
+        denom = (np.math.factorial(k) *
+                 np.math.factorial((n + abs(m)) // 2 - k) *
+                 np.math.factorial((n - abs(m)) // 2 - k))
+        radial += num / denom * rho**(n - 2*k)
     if m >= 0:
         return radial * np.cos(m * phi)
     else:
         return radial * np.sin(-m * phi)
 
-@numba.jit(nopython=True, parallel=True)
-def calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_pattern, polarization="unpolarized", aberrations=None):
+def calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um, duty_cycle,
+                              defocus_um, mask_pattern, polarization="unpolarized", aberrations=None):
     k0 = 1 / wavelength_um
     na_inner = na * (1 - sigma)
-    na_outer = na * (1 + sigma)
+    na_outer = na
 
     grid_size = X.shape[0]
     fx = np.fft.fftfreq(grid_size, d=(X[1, 0] - X[0, 0]))
@@ -40,9 +58,9 @@ def calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um, duty_cyc
     mask_ft = np.fft.fftshift(np.fft.fft2(mask_pattern))
 
     # Include aberrations using Zernike polynomials
-    aberration = 1.0
+    aberration = np.ones_like(F_rho, dtype=complex)
     if aberrations:
-        for (n, m), coeff in aberrations.items():
+        for n, m, coeff in aberrations:
             aberration += coeff * zernike(n, m, F_rho / na, F_phi)
 
     # Include polarization effects
@@ -51,58 +69,65 @@ def calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um, duty_cyc
     elif polarization == "p":
         polarization_factor = np.sin(F_phi)**2
     else:
-        polarization_factor = 1.0  # Unpolarized
+        polarization_factor = np.ones_like(F_phi)
 
-    pupil = np.where(F_rho * wavelength_um <= na_outer, 1.0, 0.0)
+    # Compute the pupil function
+    pupil = np.zeros_like(F_rho)
+    within_outer_na = F_rho * wavelength_um <= na_outer
+    pupil[within_outer_na] = 1.0
     if sigma > 0:
-        pupil *= np.clip((F_rho * wavelength_um - na_inner) / (na_outer - na_inner), 0, 1)
-    otf = pupil * aberration * polarization_factor * np.exp(-1j * 2 * np.pi * defocus_um * np.sqrt((na / wavelength_um)**2 - (FX**2 + FY**2)))
+        within_inner_na = F_rho * wavelength_um <= na_inner
+        pupil[within_inner_na] = 0.0
+        transition_zone = np.logical_and(~within_inner_na, within_outer_na)
+        pupil[transition_zone] *= np.clip((F_rho[transition_zone] * wavelength_um - na_inner) / (na_outer - na_inner), 0, 1)
+
+    sqrt_arg = (na / wavelength_um)**2 - (FX**2 + FY**2)
+    sqrt_arg[sqrt_arg < 0] = 0  # Avoid negative values under the square root
+    phase = -1j * 2 * np.pi * defocus_um * np.sqrt(sqrt_arg)
+    otf = pupil * aberration * polarization_factor * np.exp(phase)
+    otf[np.isnan(otf)] = 0  # Remove any NaNs resulting from sqrt of negative numbers
 
     image_ft = mask_ft * otf
     image = np.abs(np.fft.ifft2(np.fft.ifftshift(image_ft))) ** 2
 
     image -= image.min()
-    image /= image.max()
+    if image.max() != 0:
+        image /= image.max()
+    else:
+        image = np.zeros_like(image)
 
     return image
 
-@numba.jit(nopython=True, parallel=True)
 def add_shot_noise(image, dose):
     # Ensure dose is positive to avoid invalid values
     dose = max(dose, 1e-9)
-    noisy_image = np.random.poisson(image * dose) / dose
+    lam = image * dose
+    lam[lam > 1e8] = 1e8  # Limit lam to prevent overflow
+    noisy_image = np.random.poisson(lam) / dose
     return noisy_image
 
-@numba.jit(nopython=True, parallel=True)
 def simulate_acid_diffusion(image, diffusion_length_pixels):
     # Apply Gaussian filter for acid diffusion
     return gaussian_filter(image, sigma=diffusion_length_pixels)
 
 # Implement Dill's ABC model for resist bleaching
-@numba.jit(nopython=True)
 def simulate_resist_bleaching(exposed_intensity, exposure_time, A, B, C):
     # Simplified model: Transmittance changes with exposure
     transmittance = A * np.exp(-B * exposure_time * exposed_intensity) + C
     return transmittance
 
 # Implement Standing Wave Effects
-@numba.jit(nopython=True)
 def apply_standing_wave_effect(intensity, wavelength_um, resist_thickness_um):
     standing_wave_pattern = 0.5 * (1 + np.cos(2 * np.pi * resist_thickness_um / wavelength_um))
     return intensity * standing_wave_pattern
 
 # Simulate PAG Diffusion
-@numba.jit(nopython=True, parallel=True)
 def simulate_pag_diffusion(image, pag_diffusion_length_pixels):
     return gaussian_filter(image, sigma=pag_diffusion_length_pixels)
 
 # 3D Resist Profile Simulation
-@numba.jit(nopython=True, parallel=True)
 def simulate_resist_profile_3d(developed_image, resist_thickness_nm):
-    grid_size = developed_image.shape[0]
-    resist_height = np.zeros_like(developed_image)
-    for i in range(grid_size):
-        resist_height[i, :] = developed_image[i, :] * resist_thickness_nm
+    resist_height = developed_image * resist_thickness_nm
     return resist_height
 
 def measure_critical_dimension(resist_image, pixel_size_nm):
@@ -122,14 +147,24 @@ def measure_critical_dimension(resist_image, pixel_size_nm):
 def optimize_parameters(target_cd_nm, initial_params, bounds, simulation_params):
     def objective(params):
         na, sigma, dose = params
-        X, Y, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_pattern, diffusion_length_nm, threshold, pixel_size_nm, polarization, aberrations = simulation_params
+        (X, Y, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_pattern,
+         diffusion_length_nm, threshold, pixel_size_nm, polarization, aberrations) = simulation_params
+
         if not (bounds[0][0] <= na <= bounds[0][1] and
                 bounds[1][0] <= sigma <= bounds[1][1] and
                 bounds[2][0] <= dose <= bounds[2][1]):
             return np.inf
-        intensity = calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
-        exposed_intensity = add_shot_noise(intensity, dose)
+
+        if mask_pattern is None or mask_pattern.size == 0:
+            st.warning("Mask pattern is not provided or empty. Generating a random mask pattern.")
+            grid_size = X.shape[0]
+            mask_pattern = np.random.rand(grid_size, grid_size)
+
         diffusion_length_pixels = diffusion_length_nm / pixel_size_nm
+
+        intensity = calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um,
+                                              duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
+        exposed_intensity = add_shot_noise(intensity, dose)
         developed_image = simulate_acid_diffusion(exposed_intensity, diffusion_length_pixels)
         resist_image = developed_image >= threshold
         cd_nm = measure_critical_dimension(resist_image, pixel_size_nm)
@@ -207,35 +242,76 @@ exposure_time = st.sidebar.number_input("Exposure Time (s)", value=1.0, help="Ex
 
 # Add aberration inputs
 st.sidebar.header("Aberrations")
-aberrations = {}
+aberrations = []  # List to hold (n, m, coefficient) for aberrations
 for n in range(5):
     for m in range(-n, n+1, 2):
         if st.sidebar.checkbox(f"Zernike ({n}, {m})"):
-            aberrations[(n, m)] = st.sidebar.slider(f"Coefficient for Z({n}, {m})", -1.0, 1.0, 0.0, 0.01)
+            coeff = st.sidebar.slider(f"Coefficient for Z({n}, {m})", -1.0, 1.0, 0.0, 0.01)
+            aberrations.append((n, m, coeff))
 
 # Add polarization selection
 polarization = st.sidebar.selectbox("Polarization", ["unpolarized", "s", "p"])
+
+# Spatial positions for 2D simulation
+grid_size = 500  # Adjust for resolution
+x_range_um = 2 * (pitch / 1000.0)  # Define the simulation range
+x = np.linspace(-x_range_um, x_range_um, grid_size)
+y = np.linspace(-x_range_um, x_range_um, grid_size)
+X, Y = np.meshgrid(x, y)
+
+# Pixel size in nm (used for CD measurement)
+pixel_size_nm = (x[1] - x[0]) * 1000.0
 
 # Custom pattern input
 if mask_type == "Custom Pattern":
     st.sidebar.header("Custom Pattern Input")
     custom_pattern_code = st.sidebar.text_area(
-        "Enter custom pattern code (Python code defining 'mask')",
-        value="mask = np.where((X**2 + Y**2) < (0.5 * pitch_um)**2, 1, 0)"
+        "Enter custom pattern code (Python code defining 'mask_pattern')",
+        value="mask_pattern = np.where((X**2 + Y**2) < (0.5 * (pitch / 1000.0))**2, 1, 0)"
     )
+    # Now, execute the custom pattern code
+    try:
+        exec(custom_pattern_code, globals(), locals())
+    except Exception as e:
+        st.error(f"Error in custom pattern code: {e}")
+        st.stop()
+elif mask_type == "Line-Space Grating":
+    # Create a line-space grating mask pattern
+    mask_pattern = np.where((np.mod(X, pitch / 1000.0)) < (duty_cycle * pitch / 1000.0), 1, 0)
+elif mask_type == "Contact Hole Array":
+    X_mod = np.mod(X, pitch / 1000.0) - 0.5 * pitch / 1000.0
+    Y_mod = np.mod(Y, pitch / 1000.0) - 0.5 * pitch / 1000.0
+    hole_radius = 0.5 * duty_cycle * pitch / 1000.0
+    mask_pattern = np.where(X_mod**2 + Y_mod**2 < hole_radius**2, 1, 0)
 elif mask_type in ["Upload Pattern", "GDSII", "OASIS", "SVG"]:
     uploaded_file = st.sidebar.file_uploader("Upload Mask Pattern (NumPy .npy, GDSII, OASIS, or SVG file)", type=["npy", "gds", "oas", "svg"])
     if uploaded_file is not None:
         if uploaded_file.name.endswith(".npy"):
-            mask_pattern = np.load(uploaded_file)
+            try:
+                mask_pattern = np.load(uploaded_file)
+                if mask_pattern.size == 0:
+                    st.warning("Uploaded mask pattern is empty. Generating a random mask pattern.")
+                    mask_pattern = np.random.rand(grid_size, grid_size)
+            except Exception as e:
+                st.error(f"Error loading mask pattern: {e}")
+                st.stop()
         elif uploaded_file.name.endswith(".gds"):
-            with gdsii.GdsiiFile(uploaded_file) as f:
-                mask_pattern = gdsii_to_array(f)
+            gds_lib = gdspy.GdsLibrary()
+            gds_lib.read_gds(uploaded_file)
+            mask_pattern = gdspy_to_array(gds_lib, grid_size)
         elif uploaded_file.name.endswith(".svg"):
-            mask_pattern = svg_to_array(uploaded_file)
+            mask_pattern = svg_to_array(uploaded_file, grid_size)
         else:
             st.error("Unsupported file type.")
             st.stop()
+    else:
+        # Generate a random mask pattern if none is provided
+        mask_pattern = np.random.rand(grid_size, grid_size)
+        st.warning("No mask pattern provided. A random pattern has been generated.")
+else:
+    # Generate a random mask pattern if none is provided
+    mask_pattern = np.random.rand(grid_size, grid_size)
+    st.warning("No mask pattern provided. A random pattern has been generated.")
 
 # Preset configurations
 preset_configs = {
@@ -261,18 +337,9 @@ defocus_um = defocus_nm / 1000.0
 diffusion_length_um = diffusion_length_nm / 1000.0
 resist_thickness_um = resist_thickness_nm / 1000.0
 
-# Spatial positions for 2D simulation
-grid_size = 500  # Adjust for resolution
-x_range_um = 2 * pitch_um  # Define the simulation range
-x = np.linspace(-x_range_um, x_range_um, grid_size)
-y = np.linspace(-x_range_um, x_range_um, grid_size)
-X, Y = np.meshgrid(x, y)
-
-# Pixel size in nm (used for CD measurement)
-pixel_size_nm = (x[1] - x[0]) * 1000.0
-
 # Calculate the aerial image
-intensity = calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
+intensity = calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um,
+                                      duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
 
 # Apply exposure dose and shot noise
 exposed_intensity = add_shot_noise(intensity, dose)
@@ -281,8 +348,6 @@ exposed_intensity = add_shot_noise(intensity, dose)
 transmittance = simulate_resist_bleaching(exposed_intensity, exposure_time, A, B, C)
 # Update the intensity after bleaching
 exposed_intensity *= transmittance
-
-# Convert diffusion length from nm to pixels
 
 # Convert diffusion length from nm to pixels
 diffusion_length_pixels = diffusion_length_nm / pixel_size_nm
@@ -335,7 +400,8 @@ if st.sidebar.button("Optimize Parameters"):
     st.write(f"Optimized parameters: NA={na_opt:.3f}, σ={sigma_opt:.3f}, Dose={dose_opt:.3f}")
 
     # Re-run simulation with optimized parameters
-    intensity = calculate_aerial_image_2d(X, Y, na_opt, sigma_opt, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
+    intensity = calculate_aerial_image_2d(X, Y, na_opt, sigma_opt, wavelength_um, pitch_um,
+                                          duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
     exposed_intensity = add_shot_noise(intensity, dose_opt)
     exposed_intensity *= simulate_resist_bleaching(exposed_intensity, exposure_time, A, B, C)
     developed_image = simulate_acid_diffusion(exposed_intensity, diffusion_length_pixels)
@@ -347,7 +413,6 @@ if st.sidebar.button("Optimize Parameters"):
 
 # Plotting the results using Plotly for interactive plots
 fig = go.Figure()
-
 # Aerial image intensity plot
 fig.add_trace(
     go.Heatmap(
@@ -370,12 +435,13 @@ st.header("Process Window Analysis")
 if st.button("Run Process Window Analysis"):
     exposure_range = np.linspace(0.8, 1.2, 5)
     focus_range = np.linspace(-100, 100, 5)
-    
+
     process_window = np.zeros((len(exposure_range), len(focus_range)))
-    
+
     for i, exp in enumerate(exposure_range):
         for j, foc in enumerate(focus_range):
-            intensity = calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um, duty_cycle, foc/1000, mask_pattern, polarization, aberrations)
+            intensity = calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um,
+                                                  duty_cycle, foc / 1000.0, mask_pattern, polarization, aberrations)
             exposed_intensity = add_shot_noise(intensity, exp * dose)
             exposed_intensity *= simulate_resist_bleaching(exposed_intensity, exposure_time, A, B, C)
             developed_image = simulate_acid_diffusion(exposed_intensity, diffusion_length_pixels)
@@ -384,8 +450,8 @@ if st.button("Run Process Window Analysis"):
             resist_image = pag_diffused_image >= threshold
             cd = measure_critical_dimension(resist_image, pixel_size_nm)
             process_window[i, j] = cd
-    
-    fig_pw = px.imshow(process_window, x=focus_range, y=exposure_range, 
+
+    fig_pw = px.imshow(process_window, x=focus_range, y=exposure_range,
                        labels=dict(x="Focus (nm)", y="Relative Exposure", color="CD (nm)"),
                        title="Process Window")
     st.plotly_chart(fig_pw)
@@ -471,15 +537,17 @@ if st.button("Compare Parameters"):
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Current Parameters")
-        intensity_current = calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
+        intensity_current = calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um,
+                                                      duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
         fig_current = px.imshow(intensity_current, title="Current Parameters")
         st.plotly_chart(fig_current)
-        
+
     with col2:
         st.subheader("Modified Parameters")
         na_mod = st.slider("NA (Modified)", 0.1, 1.4, na, 0.01)
         sigma_mod = st.slider("Sigma (Modified)", 0.0, 1.0, sigma, 0.01)
-        intensity_mod = calculate_aerial_image_2d(X, Y, na_mod, sigma_mod, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
+        intensity_mod = calculate_aerial_image_2d(X, Y, na_mod, sigma_mod, wavelength_um, pitch_um,
+                                                  duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
         fig_mod = px.imshow(intensity_mod, title="Modified Parameters")
         st.plotly_chart(fig_mod)
 
@@ -488,30 +556,35 @@ st.header("Sensitivity Analysis")
 if st.button("Run Sensitivity Analysis"):
     parameters = ['NA', 'Sigma', 'Dose', 'Defocus']
     sensitivities = {}
-    
+
+    base_params = {'na': na, 'sigma': sigma, 'dose': dose, 'defocus_um': defocus_um}
+
     for param in parameters:
-        base_value = locals()[param.lower()]
+        base_value = base_params[param.lower()]
         delta = base_value * 0.05  # 5% change
-        
+
         # Calculate CD for base value
-        intensity_base = calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um, duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
+        intensity_base = calculate_aerial_image_2d(X, Y, na, sigma, wavelength_um, pitch_um,
+                                                   duty_cycle, defocus_um, mask_pattern, polarization, aberrations)
         exposed_intensity_base = add_shot_noise(intensity_base, dose)
         developed_image_base = simulate_acid_diffusion(exposed_intensity_base, diffusion_length_pixels)
         resist_image_base = developed_image_base >= threshold
         cd_base = measure_critical_dimension(resist_image_base, pixel_size_nm)
-        
+
         # Calculate CD for changed value
-        changed_params = locals().copy()
+        changed_params = base_params.copy()
         changed_params[param.lower()] += delta
-        intensity_changed = calculate_aerial_image_2d(X, Y, changed_params['na'], changed_params['sigma'], wavelength_um, pitch_um, duty_cycle, changed_params['defocus_um'], mask_pattern, polarization, aberrations)
+        intensity_changed = calculate_aerial_image_2d(X, Y, changed_params['na'], changed_params['sigma'], wavelength_um,
+                                                      pitch_um, duty_cycle, changed_params['defocus_um'], mask_pattern,
+                                                      polarization, aberrations)
         exposed_intensity_changed = add_shot_noise(intensity_changed, changed_params['dose'])
         developed_image_changed = simulate_acid_diffusion(exposed_intensity_changed, diffusion_length_pixels)
         resist_image_changed = developed_image_changed >= threshold
         cd_changed = measure_critical_dimension(resist_image_changed, pixel_size_nm)
-        
+
         sensitivity = (cd_changed - cd_base) / delta
         sensitivities[param] = sensitivity
-    
+
     st.write("Sensitivity Analysis Results:")
     for param, sensitivity in sensitivities.items():
         st.write(f"{param}: {sensitivity:.2f} nm/unit")
